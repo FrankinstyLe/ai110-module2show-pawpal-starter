@@ -4,13 +4,25 @@
 
 **a. Initial design**
 
-- Briefly describe your initial UML design.
-- What classes did you include, and what responsibilities did you assign to each?
+- A pet care system to track owner's caring activites for their pets. User should be able to add pet's name, preferences, and availabilities. The app then will suggest, keep track of activities for the pet(s) accordingly.
+- There will be 4 classes: 
+    - Owner: include onwerName(str), can addPet(), addTime(), addPreferences(). Can have multiple pets and activities.
+    - Pet: include petName(str), breed(str), petAge(int), specialNote(str). Can have multiple activities and preferences.
+    - Task: include taskType(str), priority(int), duration(int), taskNote(str). Can have multiple tasks and preferences.
+    - Schedule: include scheduleDate(str), scheduleTime(str), scheduleTask(Task). Can have multiple schedules and tasks.
 
 **b. Design changes**
 
-- Did your design change during implementation?
-- If yes, describe at least one change and why you made it.
+Yes, my design changed in a few important ways as I re-read the requirements and started building the class skeleton.
+
+
+1. **Preferences belong to the Owner, not the Pet.** I briefly moved `preferences` onto `Pet`, but the README describes them as *owner* preferences (a scheduling constraint), so I moved them back to `Owner` alongside `availability`.
+
+2. **Added a `ScheduledTask` class instead of storing the plan in dictionaries.** I originally planned to store each task's time and reason in `dict[Task, str]` maps on `Schedule`. This does not work in Python: dictionary keys must be hashable, but a mutable `@dataclass` (Task) is not hashable, so using a Task as a key raises `TypeError`. So AI recommended to introduce a small `ScheduledTask` class holding `scheduleTime`, `task`, and `reason`, and `Schedule.plannedTasks` is now a list of these. This keeps tasks editable, avoids keeping several parallel maps in sync, and maps cleanly to the repected output.
+
+3. **A Task now belongs to a Pet.** To capture the "a pet has many tasks" relationship in code, I added a `pet` reference on `Task` so every task is tied to the pet it is for.
+
+4. **`generatePlan()` returns the tasks it could not place.** Rather than silently dropping tasks when availability runs out, the scheduler returns the unplaced tasks so the UI can surface conflicts to the user.
 
 ---
 
