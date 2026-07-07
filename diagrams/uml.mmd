@@ -23,7 +23,7 @@ classDiagram
         +str taskNote
     }
 
-    class Schedule {
+    class Scheduler {
         +str scheduleDate
         +list~ScheduledTask~ plannedTasks
         +generatePlan(tasks list, availability list, preferences list) void
@@ -39,7 +39,7 @@ classDiagram
     Owner "1" --> "*" Pet : owns
     Owner "1" --> "*" Task : defines
     Pet "1" --> "*" Task : has
-    Schedule ..> Task : reads
-    Schedule ..> Owner : reads availability & preferences
-    Schedule "1" --> "*" ScheduledTask : contains
+    Scheduler ..> Task : reads
+    Scheduler ..> Owner : reads availability & preferences
+    Scheduler "1" --> "*" ScheduledTask : contains
     ScheduledTask "1" --> "1" Task : plans

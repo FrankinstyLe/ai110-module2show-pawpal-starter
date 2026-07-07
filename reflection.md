@@ -9,7 +9,7 @@
     - Owner: include onwerName(str), can addPet(), addTime(), addPreferences(). Can have multiple pets and activities.
     - Pet: include petName(str), breed(str), petAge(int), specialNote(str). Can have multiple activities and preferences.
     - Task: include taskType(str), priority(int), duration(int), taskNote(str). Can have multiple tasks and preferences.
-    - Schedule: include scheduleDate(str), scheduleTime(str), scheduleTask(Task). Can have multiple schedules and tasks.
+    - Scheduler: include scheduleDate(str), scheduleTime(str), scheduleTask(Task). Can have multiple schedules and tasks.
 
 **b. Design changes**
 
@@ -18,7 +18,7 @@ Yes, my design changed in a few important ways as I re-read the requirements and
 
 1. **Preferences belong to the Owner, not the Pet.** I briefly moved `preferences` onto `Pet`, but the README describes them as *owner* preferences (a scheduling constraint), so I moved them back to `Owner` alongside `availability`.
 
-2. **Added a `ScheduledTask` class instead of storing the plan in dictionaries.** I originally planned to store each task's time and reason in `dict[Task, str]` maps on `Schedule`. This does not work in Python: dictionary keys must be hashable, but a mutable `@dataclass` (Task) is not hashable, so using a Task as a key raises `TypeError`. So AI recommended to introduce a small `ScheduledTask` class holding `scheduleTime`, `task`, and `reason`, and `Schedule.plannedTasks` is now a list of these. This keeps tasks editable, avoids keeping several parallel maps in sync, and maps cleanly to the repected output.
+2. **Added a `ScheduledTask` class instead of storing the plan in dictionaries.** I originally planned to store each task's time and reason in `dict[Task, str]` maps on `Scheduler`. This does not work in Python: dictionary keys must be hashable, but a mutable `@dataclass` (Task) is not hashable, so using a Task as a key raises `TypeError`. So AI recommended to introduce a small `ScheduledTask` class holding `scheduleTime`, `task`, and `reason`, and `Scheduler.plannedTasks` is now a list of these. This keeps tasks editable, avoids keeping several parallel maps in sync, and maps cleanly to the repected output.
 
 3. **A Task now belongs to a Pet.** To capture the "a pet has many tasks" relationship in code, I added a `pet` reference on `Task` so every task is tied to the pet it is for.
 
