@@ -46,18 +46,35 @@ pip install -r requirements.txt
 
 Paste a sample of your app's CLI or Streamlit output here so a reader can see what a generated plan looks like:
 
-```
+```text
+Tasks as added (insertion order, unsorted):
+  - Rex: walk (priority 2, pending)
+  - Milo: medication (priority 1, pending)
+  - Rex: grooming (priority 1, done)
+  - Rex: feeding (priority 1, pending)
+  - Milo: feeding (priority 1, pending)
+
+Filtering (pendingTasks): 5 total -> 4 pending; 1 completed task(s) skipped.
+
 Today's Schedule (2026-07-07) for Alex
 ================================================
   8:00 AM  Rex: feeding (10 min)
            - Morning kibble
-           - why: matches an owner preference; priority 1; 10 min for Rex
+           - why: matches an owner preference; priority 1; 10 min for Rex; scheduled in the morning to fit its routine
+  8:10 AM  Milo: feeding (10 min)
+           - Morning wet food
+           - why: matches an owner preference; priority 1; 10 min for Milo; scheduled in the morning to fit its routine
  12:30 PM  Milo: medication (5 min)
            - Give with lunch
-           - why: priority 1; 5 min for Milo
+           - why: priority 1; 5 min for Milo; scheduled in the afternoon to fit its routine
   6:00 PM  Rex: walk (30 min)
            - Neighborhood loop
-           - why: priority 2; 30 min for Rex
+           - why: priority 2; 30 min for Rex; scheduled in the evening to fit its routine
+
+(Note: 'walk' was added first but scheduled last, and the completed 'grooming' task is absent.)
+
+[!] Schedule warnings:
+  - 2 tasks share your 8:00 AM slot and will run back-to-back: Rex's feeding, Milo's feeding.
 ```
 
 ## 🧪 Testing PawPal+
@@ -72,20 +89,18 @@ pytest --cov
 
 Sample test output:
 
-```
+```text
 # Paste your pytest output here
 ```
 
 ## 📐 Smarter Scheduling
 
-> Fill in once you've implemented scheduling logic.
-
 | Feature | Method(s) | Notes |
 |---------|-----------|-------|
-| Task sorting | | e.g., by priority, duration |
-| Filtering | | e.g., skip tasks if time runs out |
-| Conflict handling | | e.g., overlapping time slots |
-| Recurring tasks | | e.g., daily vs. weekly |
+| Task sorting | `Scheduler.generatePlan` (`sort_key`), then `plannedTasks.sort()` | places by preference > priority > time-of-day, then re-sorts the finished plan into chronological order |
+| Filtering | `Owner.pendingTasks`, `Owner.getAllTasks`, `Scheduler._findWindow` | skip completed tasks; aggregate/scope by pet; drop tasks that fit no slot (returned as unplaced) |
+| Conflict handling | `Scheduler.detectConflicts`, `Scheduler._buildWindows` | warns (never raises) when tasks share a slot; window capacity flags overbooking |
+| Recurring tasks | `Task.markComplete`, `Task._spawnNextOccurrence` | completing a `daily`/`weekly` task auto-queues its next pending occurrence on the pet |
 
 ## 📸 Demo Walkthrough
 
