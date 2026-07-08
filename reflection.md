@@ -44,27 +44,26 @@ Yes, my design changed in a few important ways as I re-read the requirements and
 
 **a. How you used AI**
 
-- How did you use AI tools during this project (for example: design brainstorming, debugging, refactoring)?
-- What kinds of prompts or questions were most helpful?
+- I used AI to help me brainstorm the initial design and to generate code snippets for the classes and methods. I also used AI to help me debug issues and to suggest improvements to my code.
+- The kind of prompts I used were mostly descriptive, asking the AI to generate code based on my design and to explain how to implement certain features.
 
 **b. Judgment and verification**
 
-- Describe one moment where you did not accept an AI suggestion as-is.
-- How did you evaluate or verify what the AI suggested?
-
+- AI's suggestions were mostly helpful, but it tended to leave a flagged issues at the end of the suggestions. Based on that and my desired design, I had to steer it away from the rabbit hole or continue with the suggestions.
+- I verified the AI's suggestions by running tests and checking the output against my expectations. I also reviewed the code to ensure it met my design requirements and made adjustments as needed.
 ---
 
 ## 4. Testing and Verification
 
 **a. What you tested**
 
-- What behaviors did you test?
-- Why were these tests important?
+- The behaviors I tested were the scheduling logic, including the handling of constraints and priorities, as well as the generation of the daily plan. I also tested the ability to add and edit tasks, and to mark tasks as complete.
+- They were important because they ensured that the core functionality of the app was working as expected and that the scheduling logic was producing valid plans.
 
 **b. Confidence**
 
-- How confident are you that your scheduler works correctly?
-- What edge cases would you test next if you had more time?
+- 4
+- I would test maximum of pets and tasks to see if the app can handle large inputs. I would also test where recurring tasks are scheduled correctly and that the next occurrence is queued properly.
 
 ---
 
@@ -72,12 +71,12 @@ Yes, my design changed in a few important ways as I re-read the requirements and
 
 **a. What went well**
 
-- What part of this project are you most satisfied with?
+- Finishing it
 
 **b. What you would improve**
 
-- If you had another iteration, what would you improve or redesign?
+- Rework the system design and its logic to be more efficient and scalable.
 
 **c. Key takeaway**
 
-- What is one important thing you learned about designing systems or working with AI on this project?
+- Working with AI without having a domain knowledge of the problem can be challenging. It is important to have a clear understanding of the requirements and constraints before starting to design and implement the system. It also cost me a lot of time and tokens to debug and fix issues that arose from AI's suggestions, so I learned to be more careful and critical when using AI for code generation.

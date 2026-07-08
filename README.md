@@ -134,6 +134,18 @@ tests\test_pawpal.py ..............................                             
 ============================================================== 30 passed in 0.09s ==============================================================
 ```
 
+## Features
+
+- Sorting by preference, priority, and time of day in `Scheduler.generatePlan`
+- Chronological output ordering so the final plan reads in real clock order
+- Filtering out completed tasks before scheduling with `Owner.pendingTasks`
+- Multi-pet scheduling across all of an owner's pets, not just one pet at a time
+- Duration-aware packing that fits multiple short tasks back-to-back in one slot
+- Availability validation that leaves oversized tasks unplaced instead of forcing them in
+- Conflict warnings when more than one task shares the same availability slot
+- Daily and weekly recurrence that automatically queues the next occurrence when a task is marked complete
+- Optional combining of identical cross-pet activities with `mergeSameActivities`
+
 ## 📐 Smarter Scheduling
 
 | Feature | Method(s) | Notes |
@@ -147,10 +159,10 @@ tests\test_pawpal.py ..............................                             
 
 Describe your app in numbered steps so a reader can follow along without watching a video:
 
-1. <!-- Describe this step -->
-2. <!-- Describe this step -->
-3. <!-- Describe this step -->
-4. <!-- Describe this step -->
-5. <!-- Add more steps as needed -->
+1. From top to bottom, add your name, pet(s), and their info (breed, age, type, special notes). 2. Then add tasks for each pet, including type, priority, duration, and any notes. You have the option to set a recurrence for each task (daily, weekly, or one-off). You can also merge identical tasks across pets if you want to do the same activity for multiple pets at once. Tasks are removable and editable after creation.
+3. Set your availability hours for the day. It's 24-hour format, and you can add multiple time windows if you have breaks in your schedule.
+4. Optional: You can add preferences for each pet to influence the order of tasks in the generated plan. For example, if your dog prefers to be walked in the morning, you can set that preference and the scheduler will try to honor it when creating the plan.
+5. Pick a date and generate a care plan by clicking the "Generate Plan" button.
+6. Review the generated plan, with the given reason(s) and mark tasks as complete as you go.
 
 **Screenshot or video** *(optional)*: <!-- Insert a screenshot or link to a demo video here -->

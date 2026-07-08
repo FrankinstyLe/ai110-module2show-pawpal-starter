@@ -56,6 +56,9 @@ class Pet:
     breed: str
     petAge: int
     specialNote: str
+    # Species/kind of animal (e.g. "Dog", "Cat", "Bird"). Defaulted so existing
+    # keyword constructions that predate this field keep working.
+    petType: str = "Dog"
     # UML: Pet "1" --> "*" Task. Kept out of eq/repr so the Task<->Pet
     # back-reference below cannot cause infinite recursion.
     tasks: list["Task"] = field(default_factory=list, compare=False, repr=False)
@@ -93,6 +96,13 @@ class Task:
     # never affects Task equality or the de-dup logic in Owner/Pet.
     uid: int = field(
         default_factory=lambda: next(_task_ids), compare=False, repr=False
+    )
+    # For a *combined* task produced by mergeSameActivities: the real per-pet
+    # tasks it stands in for, so completing the combined schedule entry can
+    # complete (and respawn) each underlying task. Empty for ordinary tasks.
+    # Excluded from eq/repr like the other bookkeeping fields.
+    mergedFrom: "list[Task]" = field(
+        default_factory=list, compare=False, repr=False
     )
 
     def isRecurring(self) -> bool:
@@ -180,21 +190,158 @@ class Owner:
 
         Aggregated from the pets so the result reflects the true owner ->
         pet -> task hierarchy, de-duplicated while preserving order.
+
+        De-dup is by identity (uid), not value equality: the goal is only to
+        avoid listing the *same* task twice (a task can appear both on its pet
+        and in the owner's flat list). Two different pets can legitimately have
+        value-identical tasks (e.g. both need a 20-min walk) -- Task equality
+        excludes `pet`, so a value-based de-dup would wrongly collapse them and
+        drop one pet's task from the schedule entirely.
         """
         seen: list[Task] = []
-        for pet in self.pets:
-            for task in pet.tasks:
-                if task not in seen:
+        seen_uids: set[int] = set()
+        for source in (*(pet.tasks for pet in self.pets), self.tasks):
+            for task in source:
+                if task.uid not in seen_uids:
+                    seen_uids.add(task.uid)
                     seen.append(task)
-        # Include any tasks registered on the owner but not yet on a pet.
-        for task in self.tasks:
-            if task not in seen:
-                seen.append(task)
         return seen
 
     def pendingTasks(self) -> list[Task]:
         """Return all outstanding (not completed) tasks across pets."""
         return [task for task in self.getAllTasks() if not task.completed]
+
+    def pendingTasksDueBy(self, when: date) -> list[Task]:
+        """Pending tasks due on or before ``when``.
+
+        A task with no dueDate is treated as always due (it carries no calendar
+        constraint). A recurring occurrence spawned for a future date therefore
+        stays out of an earlier day's list instead of piling onto "today" -- so
+        completing today's walk doesn't immediately re-list tomorrow's.
+        """
+        return [
+            task
+            for task in self.pendingTasks()
+            if task.dueDate is None or task.dueDate <= when
+        ]
+
+
+def mergeKey(task: Task) -> str:
+    """Stable id for a mergeable activity: same type AND same duration.
+
+    Duration is part of the key on purpose, so a 20-minute walk never folds
+    into a 45-minute walk -- only genuinely identical activities combine.
+    """
+    return f"{task.taskType.strip().lower()}|{task.duration}"
+
+
+def _distinctPets(tasks: list[Task]) -> list[Pet]:
+    """The distinct pets (by identity, order-preserving) a group touches."""
+    pets: list[Pet] = []
+    for task in tasks:
+        if task.pet is not None and all(task.pet is not p for p in pets):
+            pets.append(task.pet)
+    return pets
+
+
+def findMergeableActivities(tasks: list[Task]) -> list[dict]:
+    """List the activities the owner *could* combine, for the UI to offer.
+
+    A candidate is an activity type + duration that two or more *distinct* pets
+    share (e.g. a 20-min walk for both Rex and Milo). Returns one dict per
+    candidate group, in first-appearance order, with:
+
+    - ``"key"``   -- stable id to pass back in ``selectedKeys`` (see mergeSameActivities),
+    - ``"taskType"`` -- display label (original casing of the first task),
+    - ``"duration"`` -- the shared duration in minutes,
+    - ``"pets"``  -- participating pet names, in order.
+
+    Groups tied to a single pet are not candidates and are omitted.
+    """
+    groups: dict[str, list[Task]] = {}
+    order: list[str] = []
+    for task in tasks:
+        key = mergeKey(task)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(task)
+
+    candidates: list[dict] = []
+    for key in order:
+        group = groups[key]
+        pets = _distinctPets(group)
+        if len(pets) >= 2:
+            candidates.append(
+                {
+                    "key": key,
+                    "taskType": group[0].taskType,
+                    "duration": group[0].duration,
+                    "pets": [pet.petName or "Unnamed pet" for pet in pets],
+                }
+            )
+    return candidates
+
+
+def mergeSameActivities(
+    tasks: list[Task], selectedKeys: "set[str] | None" = None
+) -> list[Task]:
+    """Collapse *chosen* same-activity groups into one combined task each.
+
+    An activity is mergeable when the same type AND the same duration are shared
+    by two or more distinct pets (see mergeKey), so the owner can do it once for
+    several pets -- e.g. walk all the dogs together. Only groups whose key is in
+    ``selectedKeys`` are combined; every other task passes through unchanged.
+    ``selectedKeys=None`` combines every eligible group (convenience for callers
+    that want them all); pass an empty set to merge nothing.
+
+    For a combined task:
+
+    - **duration** is the shared duration (identical across the group by
+      definition -- doing them together takes that long, not the sum);
+    - **priority** is the MOST urgent (lowest number) in the group;
+    - the **pet** is a display-only aggregate whose name lists every
+      participant ("Rex & Milo"); the real per-pet tasks are left untouched so
+      completion and recurrence keep tracking per pet;
+    - **recurrence** is preserved only if the whole group agrees, else dropped.
+
+    This is a scheduling-time transform: it neither mutates nor replaces the
+    tasks stored on the pets, so the choice is made per plan.
+    """
+    groups: dict[str, list[Task]] = {}
+    order: list[str] = []
+    for task in tasks:
+        key = mergeKey(task)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(task)
+
+    merged: list[Task] = []
+    for key in order:
+        group = groups[key]
+        pets = _distinctPets(group)
+        chosen = selectedKeys is None or key in selectedKeys
+        if len(pets) <= 1 or not chosen:
+            merged.extend(group)  # nothing to combine, or the owner said no
+            continue
+
+        names = " & ".join(pet.petName or "Unnamed pet" for pet in pets)
+        recurrences = {task.recurrence for task in group}
+        merged.append(
+            Task(
+                taskType=group[0].taskType,
+                priority=min(task.priority for task in group),
+                duration=group[0].duration,  # shared across the group by key
+                taskNote=f"Combined for {len(pets)} pets: {names}",
+                pet=Pet(petName=names, breed="", petAge=0, specialNote=""),
+                recurrence=recurrences.pop() if len(recurrences) == 1 else None,
+                # Remember the real per-pet tasks so completing this combined
+                # entry can complete (and respawn) each of them.
+                mergedFrom=list(group),
+            )
+        )
+    return merged
 
 
 @dataclass
@@ -296,10 +443,11 @@ class Scheduler:
                 continue
             start = window.clock
             window.clock += task.duration
+            scheduleTime = self._formatTime(start)
             self.assignTask(
                 task,
-                self._formatTime(start),
-                self._explain(task, preferred, window.bucket),
+                scheduleTime,
+                self._explain(task, preferred, window, scheduleTime),
                 slot=self._formatTime(window.start),
             )
 
@@ -465,14 +613,39 @@ class Scheduler:
         return "evening"
 
     @staticmethod
-    def _explain(task: Task, preferred: set[str], windowBucket: str) -> str:
-        """Human-readable justification for why a task landed where it did."""
-        parts = []
+    def _explain(
+        task: Task, preferred: set[str], window: "_Window", scheduleTime: str
+    ) -> str:
+        """A full 'why + when' sentence for a placed task.
+
+        States when/where it lands (time and time-of-day window) and why it was
+        chosen and ordered there: owner preference, priority, and how its type's
+        usual time of day matched (or didn't match) the window it took.
+        """
+        reasons: list[str] = []
         if task.taskType.strip().lower() in preferred:
-            parts.append("matches an owner preference")
-        parts.append(f"priority {task.priority}")
-        parts.append(f"{task.duration} min for {task.pet.petName}")
+            reasons.append("it matches an owner preference")
+
+        # Name the urgency for the common levels; a lower number is more urgent.
+        urgency = {1: "high", 2: "medium", 3: "low"}.get(task.priority)
+        reasons.append(
+            f"it's {urgency}-priority (level {task.priority})"
+            if urgency
+            else f"it's priority {task.priority}"
+        )
+
         tod = TASK_TIME_OF_DAY.get(task.taskType.strip().lower())
-        if tod is not None and tod == windowBucket:
-            parts.append(f"scheduled in the {windowBucket} to fit its routine")
-        return "; ".join(parts)
+        if tod is None:
+            reasons.append("it's flexible, so it took the earliest window with room")
+        elif tod == window.bucket:
+            reasons.append(f"the {window.bucket} suits its usual routine")
+        else:
+            reasons.append(
+                f"its usual {tod} was full, so it took the earliest window with room"
+            )
+
+        why = "; ".join(reasons)
+        return (
+            f"Scheduled at {scheduleTime} in your {window.bucket} window "
+            f"({task.duration} min for {task.pet.petName}) because {why}."
+        )

@@ -2,7 +2,14 @@
 
 from datetime import date, timedelta
 
-from pawpal_system import Owner, Pet, Task, Scheduler
+from pawpal_system import (
+    Owner,
+    Pet,
+    Task,
+    Scheduler,
+    mergeSameActivities,
+    findMergeableActivities,
+)
 
 
 def test_mark_complete_changes_status():
@@ -453,13 +460,14 @@ def test_unparseable_availability_label_still_forms_a_window():
 # --- Documenting test: Task equality ignores pet & uid (see memory note). ---
 
 
-def test_identical_tasks_on_different_pets_are_deduped():
-    """Sharp edge, pinned deliberately: Task equality compares only
+def test_identical_tasks_on_different_pets_are_both_kept():
+    """Deliberate decision: Task equality compares only
     type/priority/duration/note/completed/recurrence -- pet and uid are
-    excluded. So two tasks with identical fields on *different* pets compare
-    equal, and the owner's aggregation keeps only one. Each pet still holds its
-    own task, but getAllTasks() collapses them. If this ever changes, it should
-    be a deliberate, test-visible decision."""
+    excluded -- so two tasks with identical fields on *different* pets compare
+    equal. Owner aggregation must NOT collapse them: each pet's task is a
+    distinct obligation the owner has to fulfill, so getAllTasks() de-dups by
+    identity (uid), keeping both. Collapsing by value would silently drop one
+    pet's task from the schedule."""
     rex = Pet(petName="Rex", breed="Lab", petAge=4, specialNote="")
     milo = Pet(petName="Milo", breed="Tabby", petAge=2, specialNote="")
     rex_feeding = Task(taskType="feeding", priority=1, duration=10, taskNote="kibble", pet=rex)
@@ -471,11 +479,164 @@ def test_identical_tasks_on_different_pets_are_deduped():
     owner.addTask(rex_feeding)
     owner.addTask(milo_feeding)
 
-    # Each pet still holds its own task object...
+    # Each pet holds its own task object...
     assert rex.tasks == [rex_feeding]
     assert milo.tasks == [milo_feeding]
-    # ...but owner-level aggregation collapses the two equal tasks into one.
+    # ...and owner-level aggregation keeps both, since they are distinct
+    # obligations (identity de-dup), not one collapsed task.
+    all_tasks = owner.getAllTasks()
+    assert len(all_tasks) == 2
+    assert {t.pet.petName for t in all_tasks} == {"Rex", "Milo"}
+
+
+def test_same_task_object_registered_twice_is_deduped():
+    """Identity de-dup still collapses the *same* task appearing in both a
+    pet's list and the owner's flat list -- that is the real duplicate."""
+    rex = Pet(petName="Rex", breed="Lab", petAge=4, specialNote="")
+    feeding = Task(taskType="feeding", priority=1, duration=10, taskNote="", pet=rex)
+
+    owner = Owner(ownerName="Alex")
+    owner.addTask(feeding)  # lands in owner.tasks AND rex.tasks
+
     assert len(owner.getAllTasks()) == 1
+
+
+# --- Merge same activity across pets ----------------------------------------
+
+
+def test_merge_combines_identical_activity_across_pets():
+    """Two pets' identical walks (same type AND duration) collapse into one
+    combined entry: shared duration, most-urgent priority, both names shown."""
+    rex = Pet(petName="Rex", breed="Lab", petAge=4, specialNote="")
+    milo = Pet(petName="Milo", breed="Tabby", petAge=2, specialNote="")
+    rex_walk = Task(taskType="walk", priority=2, duration=20, taskNote="", pet=rex)
+    milo_walk = Task(taskType="Walk", priority=1, duration=20, taskNote="", pet=milo)
+
+    merged = mergeSameActivities([rex_walk, milo_walk])
+
+    assert len(merged) == 1
+    combined = merged[0]
+    assert combined.duration == 20       # shared duration, not the 40-min sum
+    assert combined.priority == 1        # most urgent wins
+    assert combined.pet.petName == "Rex & Milo"
+
+
+def test_merge_skips_same_activity_with_different_durations():
+    """Same type but different durations are NOT identical, so they don't
+    merge -- a 20-min walk stays separate from a 45-min walk."""
+    rex = Pet(petName="Rex", breed="Lab", petAge=4, specialNote="")
+    milo = Pet(petName="Milo", breed="Tabby", petAge=2, specialNote="")
+    rex_walk = Task(taskType="walk", priority=1, duration=20, taskNote="", pet=rex)
+    milo_walk = Task(taskType="walk", priority=1, duration=45, taskNote="", pet=milo)
+
+    merged = mergeSameActivities([rex_walk, milo_walk])
+
+    assert merged == [rex_walk, milo_walk]  # untouched, two separate walks
+
+
+def test_merge_only_combines_selected_groups():
+    """By choice: only groups whose key is selected merge; the rest pass
+    through even though they are eligible."""
+    rex = Pet(petName="Rex", breed="Lab", petAge=4, specialNote="")
+    milo = Pet(petName="Milo", breed="Tabby", petAge=2, specialNote="")
+    rex_walk = Task(taskType="walk", priority=1, duration=20, taskNote="", pet=rex)
+    milo_walk = Task(taskType="walk", priority=1, duration=20, taskNote="", pet=milo)
+    rex_feed = Task(taskType="feeding", priority=1, duration=10, taskNote="", pet=rex)
+    milo_feed = Task(taskType="feeding", priority=1, duration=10, taskNote="", pet=milo)
+
+    tasks = [rex_walk, milo_walk, rex_feed, milo_feed]
+    candidates = findMergeableActivities(tasks)
+    assert {c["key"] for c in candidates} == {"walk|20", "feeding|10"}
+
+    # Merge only the walks; feedings stay as two separate tasks.
+    merged = mergeSameActivities(tasks, {"walk|20"})
+    types = sorted(t.taskType.lower() for t in merged)
+    assert types == ["feeding", "feeding", "walk"]  # one combined walk, two feedings
+
+    # Empty selection merges nothing at all.
+    assert mergeSameActivities(tasks, set()) == tasks
+
+
+def test_findMergeableActivities_ignores_single_pet_and_reports_pets():
+    """Only cross-pet identical activities are candidates; each reports its
+    participating pet names."""
+    rex = Pet(petName="Rex", breed="Lab", petAge=4, specialNote="")
+    milo = Pet(petName="Milo", breed="Tabby", petAge=2, specialNote="")
+    shared = [
+        Task(taskType="walk", priority=1, duration=20, taskNote="", pet=rex),
+        Task(taskType="walk", priority=1, duration=20, taskNote="", pet=milo),
+    ]
+    solo = [Task(taskType="grooming", priority=1, duration=15, taskNote="", pet=rex)]
+
+    candidates = findMergeableActivities(shared + solo)
+
+    assert len(candidates) == 1
+    assert candidates[0]["key"] == "walk|20"
+    assert candidates[0]["pets"] == ["Rex", "Milo"]
+
+
+def test_merge_drops_recurrence_when_group_disagrees():
+    """Recurrence survives merge only if the whole group agrees."""
+    rex = Pet(petName="Rex", breed="Lab", petAge=4, specialNote="")
+    milo = Pet(petName="Milo", breed="Tabby", petAge=2, specialNote="")
+    daily = Task(taskType="walk", priority=1, duration=20, taskNote="", pet=rex, recurrence="daily")
+    once = Task(taskType="walk", priority=1, duration=20, taskNote="", pet=milo, recurrence=None)
+
+    assert mergeSameActivities([daily, once])[0].recurrence is None
+
+    milo_daily = Task(taskType="walk", priority=1, duration=20, taskNote="", pet=milo, recurrence="daily")
+    assert mergeSameActivities([daily, milo_daily])[0].recurrence == "daily"
+
+
+def test_merged_task_remembers_underlying_tasks():
+    """A combined task exposes its real per-pet tasks via mergedFrom, so the UI
+    can complete each one when the owner marks the combined entry done."""
+    rex = Pet(petName="Rex", breed="Lab", petAge=4, specialNote="")
+    milo = Pet(petName="Milo", breed="Tabby", petAge=2, specialNote="")
+    rex_walk = Task(taskType="walk", priority=1, duration=20, taskNote="", pet=rex)
+    milo_walk = Task(taskType="walk", priority=1, duration=20, taskNote="", pet=milo)
+
+    combined = mergeSameActivities([rex_walk, milo_walk])[0]
+
+    assert combined.mergedFrom == [rex_walk, milo_walk]
+    # An ordinary (non-merged) task carries an empty mergedFrom.
+    assert rex_walk.mergedFrom == []
+
+
+def test_pending_due_by_excludes_future_occurrences():
+    """Completing a dated recurring task queues the next occurrence on a future
+    date, which must NOT appear in an earlier day's due list -- this is what
+    stops recurring tasks from piling onto 'today'."""
+    today = date(2026, 7, 8)
+    pet = Pet(petName="Rex", breed="Lab", petAge=4, specialNote="")
+    walk = Task(
+        taskType="walk", priority=1, duration=20, taskNote="",
+        pet=pet, recurrence="daily", dueDate=today,
+    )
+    pet.tasks.append(walk)
+    owner = Owner(ownerName="Alex")
+    owner.addPet(pet)
+
+    assert owner.pendingTasksDueBy(today) == [walk]  # due today
+
+    spawned = walk.markComplete()
+    assert spawned.dueDate == today + timedelta(days=1)  # +1 day for daily
+    # Today's list is now empty (walk completed, next occurrence is tomorrow's)...
+    assert owner.pendingTasksDueBy(today) == []
+    # ...and tomorrow's list surfaces the new occurrence.
+    assert owner.pendingTasksDueBy(today + timedelta(days=1)) == [spawned]
+
+
+def test_pending_due_by_treats_undated_as_always_due():
+    """A task with no dueDate carries no calendar constraint, so it shows for
+    any planning day."""
+    pet = Pet(petName="Rex", breed="Lab", petAge=4, specialNote="")
+    chore = Task(taskType="brush", priority=1, duration=5, taskNote="", pet=pet)
+    pet.tasks.append(chore)
+    owner = Owner(ownerName="Alex")
+    owner.addPet(pet)
+
+    assert owner.pendingTasksDueBy(date(2020, 1, 1)) == [chore]
 
 
 # --- Rubric coverage: explicit chronological-order check across 3 windows. ---

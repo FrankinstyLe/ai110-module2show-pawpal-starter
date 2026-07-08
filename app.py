@@ -1,6 +1,13 @@
 import streamlit as st
-from datetime import time
-from pawpal_system import Owner, Pet, Task, Scheduler
+from datetime import date, time
+from pawpal_system import (
+    Owner,
+    Pet,
+    Task,
+    Scheduler,
+    mergeSameActivities,
+    findMergeableActivities,
+)
 
 st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
 
@@ -30,7 +37,8 @@ with st.expander("How it works", expanded=False):
 - Represent one or more pets and the owner (basic info and preferences)
 - Build a plan/schedule for a day that chooses and orders tasks based on constraints
 - Explain the plan (why each task was chosen and when it happens)
-- Mark tasks done; completing a **daily**/**weekly** task queues its next occurrence
+- Mark tasks done **in the generated schedule**; completing a **daily**/**weekly**
+  task queues its next occurrence on the next date (+1 day / +7 days)
 """
     )
 
@@ -40,6 +48,9 @@ st.divider()
 # number means more urgent (see Scheduler.generatePlan). high -> 1 (most urgent).
 PRIORITY_TO_INT = {"high": 1, "medium": 2, "low": 3}
 RECURRENCE_OPTIONS = ["none", "daily", "weekly"]
+# Common pet types for the selectbox; "Other" lets an owner type a free-form
+# species without us trying to enumerate every animal.
+PET_TYPE_OPTIONS = ["Dog", "Cat", "Bird", "Rabbit", "Fish", "Reptile", "Other"]
 
 
 def fmt_time(t: time) -> str:
@@ -54,19 +65,34 @@ def _recurrence_badge(task: Task) -> str:
     return f"🔁 {task.recurrence}" if task.isRecurring() else "—"
 
 
+def _due_badge(task: Task) -> str:
+    """Small label showing the day a task is due, blank if it carries no date."""
+    return f"📅 {task.dueDate:%b %d}" if task.dueDate else ""
+
+
+def _type_options_for(current: str) -> list[str]:
+    """Selectbox options that always include the pet's current type.
+
+    Keeps a previously-saved custom type selectable instead of silently
+    snapping it back to the first option on the next rerun.
+    """
+    if current and current not in PET_TYPE_OPTIONS:
+        return [current] + PET_TYPE_OPTIONS
+    return PET_TYPE_OPTIONS
+
+
 # --- Persistent state (survives Streamlit reruns) ---------------------------
 # Pets and their Task objects live here so completing a recurring task (which
 # spawns its next occurrence) sticks across reruns. Availability windows are
 # (start, end) label pairs and may be non-consecutive.
 if "pets" not in st.session_state:
-    st.session_state.pets = [
-        Pet(petName="Mochi", breed="Shiba Inu", petAge=3, specialNote="")
-    ]
+    # Start empty so the owner fills in their own pets, tasks, and availability.
+    st.session_state.pets = []
 if "slots" not in st.session_state:
-    st.session_state.slots = [("8:00 AM", "12:00 PM"), ("5:00 PM", "8:00 PM")]
+    st.session_state.slots = []
 
 st.subheader("Owner")
-owner_name = st.text_input("Owner name", value="Jordan")
+owner_name = st.text_input("Owner name", value="")
 
 # --- Pets -------------------------------------------------------------------
 st.subheader("Pets")
@@ -75,13 +101,23 @@ st.caption("Add one or more pets. Every task belongs to a pet.")
 # Widgets key on pet.uid (stable) rather than list index, so removing a pet
 # never leaves another pet bound to a stale widget value.
 for pet in st.session_state.pets:
+    header = f"🐾 {pet.petName or 'Unnamed pet'}"
+    if pet.petType:
+        header += f" · {pet.petType}"
     with st.expander(
-        f"🐾 {pet.petName or 'Unnamed pet'}",
+        header,
         expanded=len(st.session_state.pets) == 1,
     ):
         c1, c2 = st.columns(2)
         with c1:
             pet.petName = st.text_input("Name", value=pet.petName, key=f"pn_{pet.uid}")
+            type_options = _type_options_for(pet.petType)
+            pet.petType = st.selectbox(
+                "Type",
+                options=type_options,
+                index=type_options.index(pet.petType) if pet.petType in type_options else 0,
+                key=f"pt_{pet.uid}",
+            )
             pet.breed = st.text_input("Breed", value=pet.breed, key=f"pb_{pet.uid}")
         with c2:
             pet.petAge = int(
@@ -105,6 +141,7 @@ with st.form("add_pet", clear_on_submit=True):
     ac1, ac2 = st.columns(2)
     with ac1:
         new_name = st.text_input("Name", value="")
+        new_type = st.selectbox("Type", options=PET_TYPE_OPTIONS, index=0)
         new_breed = st.text_input("Breed", value="")
     with ac2:
         new_age = st.number_input("Age (years)", min_value=0, max_value=50, value=1)
@@ -112,7 +149,7 @@ with st.form("add_pet", clear_on_submit=True):
     if st.form_submit_button("Add pet"):
         if new_name.strip():
             st.session_state.pets.append(
-                Pet(petName=new_name.strip(), breed=new_breed,
+                Pet(petName=new_name.strip(), petType=new_type, breed=new_breed,
                     petAge=int(new_age), specialNote=new_note)
             )
             st.rerun()
@@ -121,14 +158,30 @@ with st.form("add_pet", clear_on_submit=True):
 
 st.divider()
 
+# Build the owner once from the current pets so the task list, the combine
+# choices, and the scheduler all read the same hierarchy. Pet field edits above
+# have already been applied to these same objects.
+owner = Owner(ownerName=owner_name)
+for pet in st.session_state.pets:
+    owner.addPet(pet)
+
+# The day we're planning for. Read from the (later) schedule-date widget's saved
+# value so "due today" and the combine choices match what will be scheduled;
+# defaults to today on the first run, before that widget has been created.
+planning_day = st.session_state.get("schedule_date", date.today())
+
+# Populated by the "Combine activities" picker below; consumed at generate time.
+selected_merge_keys: set[str] = set()
+
 # --- Tasks ------------------------------------------------------------------
 st.subheader("Tasks")
 if not st.session_state.pets:
     st.info("Add a pet above before creating tasks.")
 else:
     st.caption(
-        "Add tasks for a pet, tick them off as done, and set a recurrence so "
-        "completing one automatically queues the next occurrence."
+        "Add tasks for a pet. You mark them done in the generated schedule "
+        "below — completing a daily/weekly task queues its next occurrence on "
+        "the next date (+1 day / +7 days)."
     )
     pets = st.session_state.pets
     # Index-based selection keeps the option values hashable for session_state.
@@ -142,7 +195,7 @@ else:
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        task_title = st.text_input("Task title", value="Morning walk")
+        task_title = st.text_input("Task title", value="")
     with col2:
         duration = st.number_input("Duration (min)", min_value=1, max_value=240, value=20)
     with col3:
@@ -154,74 +207,85 @@ else:
     col_add, col_clear = st.columns(2)
     with col_add:
         if st.button("Add task"):
-            target_pet.tasks.append(
-                Task(
-                    taskType=task_title,
-                    priority=PRIORITY_TO_INT.get(priority, 2),
-                    duration=int(duration),
-                    taskNote=task_note,
-                    pet=target_pet,
-                    recurrence=None if recurrence_choice == "none" else recurrence_choice,
+            if task_title.strip():
+                target_pet.tasks.append(
+                    Task(
+                        taskType=task_title.strip(),
+                        priority=PRIORITY_TO_INT.get(priority, 2),
+                        duration=int(duration),
+                        taskNote=task_note,
+                        pet=target_pet,
+                        recurrence=None if recurrence_choice == "none" else recurrence_choice,
+                        # Dated to today so a completed recurring task's next
+                        # occurrence lands on a *future* day instead of today.
+                        dueDate=date.today(),
+                    )
                 )
-            )
+            else:
+                st.warning("Give the task a title first.")
     with col_clear:
         if st.button("Clear all tasks"):
             for p in pets:
                 p.tasks.clear()
             st.session_state.pop("plan", None)
+            st.rerun()
 
     st.markdown("#### Current tasks")
-    if any(p.tasks for p in pets):
+    all_pending = owner.pendingTasks()  # completed tasks drop off this list
+    if all_pending:
         for pet in pets:
-            if not pet.tasks:
+            pet_pending = [task for task in pet.tasks if not task.completed]
+            if not pet_pending:
                 continue
             st.markdown(f"**{pet.petName or 'Unnamed pet'}**")
-            # Snapshot: completing a recurring task appends to pet.tasks, and we
-            # don't want to mutate the list we're iterating.
-            for task in list(pet.tasks):
-                done_col, label_col, prio_col, repeat_col = st.columns(
-                    [0.12, 0.5, 0.18, 0.2]
+            # Earliest-due first; undated tasks sort last.
+            for task in sorted(
+                pet_pending,
+                key=lambda t: (t.dueDate or date.max, t.taskType.lower()),
+            ):
+                label_col, prio_col, meta_col, rm_col = st.columns(
+                    [0.46, 0.16, 0.24, 0.14]
                 )
-                with done_col:
-                    checked = st.checkbox(
-                        "done",
-                        value=task.completed,
-                        # task.uid is stable; id() would be recycled after a
-                        # task is cleared, letting a new task inherit stale state.
-                        key=f"done_{task.uid}",
-                        label_visibility="collapsed",
-                    )
                 with label_col:
-                    title = (
-                        f"~~{task.taskType}~~" if task.completed
-                        else f"**{task.taskType}**"
-                    )
-                    st.write(f"{title} — {task.duration} min")
+                    st.write(f"**{task.taskType}** — {task.duration} min")
                     if task.taskNote:
                         st.caption(task.taskNote)
                 with prio_col:
                     st.write(f"priority {task.priority}")
-                with repeat_col:
-                    st.write(_recurrence_badge(task))
-
-                # Reconcile the checkbox with the model. markComplete() is a
-                # no-op if already done, so this only fires on a real
-                # not-done -> done transition.
-                if checked and not task.completed:
-                    spawned = task.markComplete()
-                    if spawned is not None:
-                        st.session_state.last_spawn = (
-                            f"Completed '{task.taskType}' for {pet.petName} — "
-                            f"queued its next {spawned.recurrence} occurrence."
-                        )
-                        st.rerun()  # re-render so the new occurrence shows
-                elif not checked and task.completed:
-                    task.reopen()
-
-        if st.session_state.get("last_spawn"):
-            st.toast(st.session_state.pop("last_spawn"))
+                with meta_col:
+                    badges = " ".join(
+                        b for b in (_recurrence_badge(task), _due_badge(task)) if b and b != "—"
+                    )
+                    st.write(badges or "—")
+                with rm_col:
+                    if st.button("Remove", key=f"taskrm_{task.uid}"):
+                        pet.tasks[:] = [t for t in pet.tasks if t.uid != task.uid]
+                        st.session_state.pop("plan", None)
+                        st.rerun()
     else:
-        st.info("No tasks yet. Add one above.")
+        st.info("No pending tasks. Add one above.")
+
+    # --- Combine activities (moved here, under Current tasks) ---------------
+    # Offer to combine only genuinely identical activities (same type AND
+    # duration) that more than one pet shares, among the tasks due for the day
+    # we're planning. The owner picks which ones — not an all-or-nothing switch.
+    due_pending = owner.pendingTasksDueBy(planning_day)
+    merge_candidates = findMergeableActivities(due_pending)
+    if merge_candidates:
+        st.markdown("#### Combine activities")
+        st.caption(
+            "These identical activities are shared by more than one pet. Tick "
+            "any you'd like to do together in a single time slot — your per-pet "
+            "tasks stay unchanged."
+        )
+        for candidate in merge_candidates:
+            label = (
+                f"{candidate['taskType']} ({candidate['duration']} min) — "
+                + ", ".join(candidate["pets"])
+            )
+            # Key on the stable activity id so each checkbox survives reruns.
+            if st.checkbox(label, value=False, key=f"merge_{candidate['key']}"):
+                selected_merge_keys.add(candidate["key"])
 
 st.divider()
 
@@ -262,37 +326,31 @@ else:
 
 st.markdown("### Preferences")
 preferences_str = st.text_input(
-    "Preferences (comma-separated task types to prioritize)", value="feeding"
+    "Preferences (comma-separated task types to prioritize)", value=""
 )
 
 st.divider()
 
 # --- Build schedule ---------------------------------------------------------
 st.subheader("Build Schedule")
-st.caption("Calls Scheduler.generatePlan() with every pet's pending tasks.")
+st.caption(
+    "Plans the tasks due for the chosen date. Mark tasks done here — a "
+    "daily/weekly task then queues its next occurrence automatically."
+)
 
-schedule_date = st.date_input("Schedule date")
+# key= lets the Tasks section read this day back (see planning_day above).
+schedule_date = st.date_input("Schedule date", key="schedule_date")
+tasks_for_day = owner.pendingTasksDueBy(schedule_date)
 
-# Aggregate pending tasks across all pets via the Owner's filtering method.
-owner = Owner(ownerName=owner_name)
-for pet in st.session_state.pets:
-    owner.addPet(pet)
-pending = owner.pendingTasks()
-
-st.markdown("#### 🔔 Still to do today")
-if pending:
-    st.warning(f"{len(pending)} task(s) not done yet:")
-    for task in pending:
-        st.write(
-            f"- **{task.pet.petName}** — {task.taskType} "
-            f"({task.duration} min) {_recurrence_badge(task)}"
-        )
+st.markdown("#### 🔔 Still to do")
+if tasks_for_day:
+    st.info(f"{len(tasks_for_day)} task(s) due for {schedule_date}.")
 else:
-    st.success("All caught up — nothing pending. 🎉")
+    st.success("Nothing due for this date. 🎉")
 
 if st.button("Generate schedule"):
-    if not pending:
-        st.warning("No pending tasks to schedule. Add some (or un-check completed ones).")
+    if not tasks_for_day:
+        st.warning("No tasks due for this date. Add some, or pick another date.")
         st.session_state.pop("plan", None)
     elif not st.session_state.slots:
         st.warning("Add at least one availability slot before generating.")
@@ -300,23 +358,30 @@ if st.button("Generate schedule"):
     else:
         preferences = [p.strip() for p in preferences_str.split(",") if p.strip()]
 
+        # Merging is a scheduling-time view: collapse only the activity groups
+        # the owner chose, leaving the per-pet tasks untouched.
+        tasks_to_plan = mergeSameActivities(tasks_for_day, selected_merge_keys)
+
         scheduler = Scheduler(scheduleDate=str(schedule_date))
         unplaced = scheduler.generatePlan(
-            pending, list(st.session_state.slots), preferences
+            tasks_to_plan, list(st.session_state.slots), preferences
         )
 
-        # Stash the result so it survives later reruns (e.g. ticking a checkbox).
+        # Stash the plan so it survives reruns. Each entry keeps references to
+        # the real per-pet tasks it covers (a combined entry covers several via
+        # Task.mergedFrom), so the "Done" control can complete them.
         st.session_state.plan = {
             "date": scheduler.scheduleDate,
-            "rows": [
+            "entries": [
                 {
-                    "Time": scheduled.scheduleTime,
-                    "Pet": scheduled.task.pet.petName,
-                    "Task": scheduled.task.taskType,
-                    "Duration (min)": scheduled.task.duration,
-                    "Priority": scheduled.task.priority,
-                    "Repeats": _recurrence_badge(scheduled.task),
-                    "Why": scheduled.reason,
+                    "time": scheduled.scheduleTime,
+                    "petName": scheduled.task.pet.petName,
+                    "taskType": scheduled.task.taskType,
+                    "duration": scheduled.task.duration,
+                    "priority": scheduled.task.priority,
+                    "recurrence": scheduled.task.recurrence,
+                    "reason": scheduled.reason,
+                    "tasks": scheduled.task.mergedFrom or [scheduled.task],
                 }
                 for scheduled in scheduler.plannedTasks
             ],
@@ -329,14 +394,85 @@ if st.button("Generate schedule"):
 plan = st.session_state.get("plan")
 if plan:
     st.success(f"Plan for {plan['date']}")
-    if plan["rows"]:
-        st.table(plan["rows"])
+    entries = plan["entries"]
+    if entries:
+        # Header row for a table-like, professional layout.
+        h = st.columns([0.1, 0.16, 0.44, 0.14, 0.16])
+        for col, title in zip(h, ["Done", "Time", "Task", "Repeats", "Priority"]):
+            col.markdown(f"**{title}**")
+        for entry in entries:
+            underlying = entry["tasks"]
+            done = all(task.completed for task in underlying)
+            done_col, time_col, task_col, repeat_col, prio_col = st.columns(
+                [0.1, 0.16, 0.44, 0.14, 0.16]
+            )
+            with done_col:
+                # Stable key across reruns from every underlying task's uid.
+                checked = st.checkbox(
+                    "done",
+                    value=done,
+                    key="plandone_" + "_".join(str(t.uid) for t in underlying),
+                    label_visibility="collapsed",
+                )
+            with time_col:
+                st.write(f"🕐 {entry['time']}")
+            with task_col:
+                label = f"{entry['petName']} — {entry['taskType']}"
+                st.write(f"~~{label}~~" if done else f"**{label}**")
+            with repeat_col:
+                st.write(f"🔁 {entry['recurrence']}" if entry["recurrence"] else "—")
+            with prio_col:
+                st.write(f"priority {entry['priority']}")
+
+            # Full-width explanation: why this task was chosen and when it lands.
+            st.caption(f"💡 {entry['reason']}")
+
+            # Completing here marks every underlying per-pet task done; each
+            # recurring one queues its next occurrence on the +1/+7 date.
+            if checked and not done:
+                spawned = [
+                    task.markComplete()
+                    for task in underlying
+                    if not task.completed
+                ]
+                spawned_dates = sorted(
+                    {s.dueDate for s in spawned if s is not None and s.dueDate}
+                )
+                if spawned_dates:
+                    when = ", ".join(f"{d:%b %d}" for d in spawned_dates)
+                    st.session_state.last_spawn = (
+                        f"Done: {entry['taskType']} for {entry['petName']}. "
+                        f"Next occurrence queued for {when}."
+                    )
+                st.rerun()
+            elif not checked and done:
+                for task in underlying:
+                    task.reopen()
+                st.rerun()
     else:
         st.info("No tasks could be placed. Check your availability slots.")
-    for warning in plan.get("conflicts", []):
-        st.warning(f"⚠ {warning}")
+
+    if st.session_state.get("last_spawn"):
+        st.toast(st.session_state.pop("last_spawn"))
+
+    # Soft conflicts: tasks packed back-to-back in one slot. The plan still
+    # works, so frame these as a heads-up with a concrete next step rather than
+    # an error the owner can't act on.
+    conflicts = plan.get("conflicts", [])
+    if conflicts:
+        st.markdown("#### ⚠️ Heads up")
+        st.caption(
+            "These tasks still fit, but they're squeezed into the same window. "
+            "Add another availability slot if you'd rather space them out."
+        )
+        for warning in conflicts:
+            st.warning(warning)
+
+    # Unplaced tasks genuinely won't get done — a harder problem than a
+    # back-to-back conflict, so it gets an error, not another yellow warning.
     if plan["unplaced"]:
-        st.warning(
-            f"{len(plan['unplaced'])} task(s) had no available slot: "
-            + ", ".join(plan["unplaced"])
+        st.error(
+            f"❌ {len(plan['unplaced'])} task(s) had no available slot and "
+            f"won't be scheduled: " + ", ".join(plan["unplaced"])
+            + ". Add more availability to fit them in."
         )

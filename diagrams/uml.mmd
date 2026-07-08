@@ -3,17 +3,26 @@ classDiagram
         +str ownerName
         +list~str~ availability
         +list~str~ preferences
+        +list~Pet~ pets
+        +list~Task~ tasks
         +addPet(pet Pet) void
         +addTask(task Task) void
         +addTime(slot str) void
         +addPreferences(preference str) void
+        +getAllTasks() list~Task~
+        +pendingTasks() list~Task~
+        +pendingTasksDueBy(when date) list~Task~
     }
 
     class Pet {
         +str petName
+        +str petType
         +str breed
         +int petAge
         +str specialNote
+        +list~Task~ tasks
+        +int uid
+        +addTask(task Task) void
     }
 
     class Task {
@@ -21,25 +30,59 @@ classDiagram
         +int priority
         +int duration
         +str taskNote
+        +Pet pet
+        +bool completed
+        +str recurrence
+        +date dueDate
+        +int uid
+        +list~Task~ mergedFrom
+        +isRecurring() bool
+        +markComplete() Task
+        +reopen() void
+        -_spawnNextOccurrence() Task
     }
 
     class Scheduler {
         +str scheduleDate
         +list~ScheduledTask~ plannedTasks
-        +generatePlan(tasks list, availability list, preferences list) void
-        +assignTask(task Task, slot str, reason str) void
+        +generatePlan(tasks list, availability list, preferences list, defaultSlotMinutes int) list~Task~
+        +assignTask(task Task, scheduleTime str, reason str, slot str) void
+        +detectConflicts() list~str~
+        -_buildWindows(availability list, defaultSlotMinutes int) list~Window~
+        -_findWindow(task Task, windows list~Window~) Window
     }
 
     class ScheduledTask {
         +str scheduleTime
         +Task task
         +str reason
+        +str slot
     }
 
-    Owner "1" --> "*" Pet : owns
-    Owner "1" --> "*" Task : defines
-    Pet "1" --> "*" Task : has
-    Scheduler ..> Task : reads
-    Scheduler ..> Owner : reads availability & preferences
-    Scheduler "1" --> "*" ScheduledTask : contains
+    class Window {
+        <<internal>>
+        +int start
+        +int end
+        +str bucket
+        +int clock
+    }
+
+    class MergeHelpers {
+        <<module functions>>
+        +mergeKey(task Task) str
+        +findMergeableActivities(tasks list~Task~) list~dict~
+        +mergeSameActivities(tasks list~Task~, selectedKeys set~str~) list~Task~
+    }
+
+    Owner "1" o-- "*" Pet : owns
+    Owner "1" o-- "*" Task : aggregates
+    Pet "1" *-- "*" Task : has
+    Task "*" --> "1" Pet : belongs to
+    Task ..> Task : mergedFrom (combined entry)
+    Scheduler "1" *-- "*" ScheduledTask : contains
     ScheduledTask "1" --> "1" Task : plans
+    Scheduler ..> Task : reads & places
+    Scheduler ..> Window : builds internally
+    MergeHelpers ..> Task : combines same-activity tasks
+
+    note for Scheduler "Scheduling pipeline (orchestrated by app.py): Owner.pendingTasksDueBy(date) then MergeHelpers.mergeSameActivities(selected) then Scheduler.generatePlan(tasks, availability, preferences)"
