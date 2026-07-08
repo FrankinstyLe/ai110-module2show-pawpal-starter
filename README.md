@@ -85,12 +85,53 @@ pytest
 
 # Run with coverage:
 pytest --cov
+
+# Run a single test file:
+pytest tests/test_pawpal.py
 ```
 
-Sample test output:
+### Brief description of what the tests cover:
+* Task & recurrence basics
+
+  * markComplete flips status; addTask grows a pet's task list
+  * Daily task spawns a next occurrence; one-off tasks don't; completing twice never double-spawns
+  * Dated recurrence: daily → next day, weekly → +7 days, undated stays undated
+  * Casing/whitespace recurrence still recurs; unrecognized value ("monthly") treated as one-off; reopen() un-completes
+
+* Scheduling / packing
+
+  * Short tasks pack back-to-back with computed times; a too-long task is unplaced
+  * Explicit (start, end) windows and "start - end" strings cap capacity; non-consecutive windows both usable
+  * Exact-fit task (duration == window) fits (inclusive boundary)
+
+* Sorting
+
+  * Chronological output across three windows even from scrambled input
+  * Availability ordered by real time; preferred task placed first still displays in clock order
+  * Preference outranks priority; all-equal keys preserve insertion order
+
+* Conflict detection
+
+  * Shared slot → one warning naming the slot + tasks; separate slots → no warning
+
+* Edge cases / documented behavior
+
+  * Empty task list → empty plan; no availability → everything unplaced; task-less pet contributes nothing
+  * Unparseable availability label falls back to the 8:00 AM cursor
+  * Identical-field tasks on different pets compare equal and collapse in owner aggregation (pinned as a known sharp edge)
+
+### Sample test output:
 
 ```text
-# Paste your pytest output here
+============================================================= test session starts ==============================================================
+platform win32 -- Python 3.13.1, pytest-9.1.1, pluggy-1.6.0
+rootdir: C:\Users\Frankinstyle\CodePath\AI110\Project 2\ai110-module2show-pawpal-starter
+plugins: anyio-4.14.1
+collected 30 items                                                                                                                              
+
+tests\test_pawpal.py ..............................                                                                                       [100%]
+
+============================================================== 30 passed in 0.09s ==============================================================
 ```
 
 ## 📐 Smarter Scheduling

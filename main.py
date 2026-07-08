@@ -9,10 +9,15 @@ completed tasks) and sorting logic (Scheduler.generatePlan reorders by
 preference, then priority, then duration) actually working.
 """
 
+from datetime import date
+
 from pawpal_system import Owner, Pet, Task, Scheduler
 
 
 def main() -> None:
+    # The day this plan is for; reused as the due date of dated tasks below.
+    today = date(2026, 7, 7)
+
     # Create an owner with availability and scheduling preferences.
     owner = Owner(ownerName="Alex")
     owner.addTime("8:00 AM")
@@ -39,8 +44,12 @@ def main() -> None:
                    taskNote="Already brushed this morning", pet=rex)
     groomed.markComplete()  # this one should get filtered out of the plan
     owner.addTask(groomed)
-    owner.addTask(Task(taskType="feeding", priority=1, duration=10,
-                       taskNote="Morning kibble", pet=rex))
+    # Rex's breakfast is a daily routine, dated to today, so completing it later
+    # queues tomorrow's occurrence (see the Recurrence section at the end).
+    rex_breakfast = Task(taskType="feeding", priority=1, duration=10,
+                         taskNote="Morning kibble", pet=rex,
+                         recurrence="daily", dueDate=today)
+    owner.addTask(rex_breakfast)
     # Milo also needs breakfast: two feedings compete for the one morning slot,
     # which the Scheduler should flag as a same-slot conflict (below).
     owner.addTask(Task(taskType="feeding", priority=1, duration=10,
@@ -59,7 +68,7 @@ def main() -> None:
           f"{len(pending)} pending; {dropped} completed task(s) skipped.\n")
 
     # --- Sorting: generatePlan sorts the pending tasks before placing them. ---
-    scheduler = Scheduler(scheduleDate="2026-07-07")
+    scheduler = Scheduler(scheduleDate=today.isoformat())
     unplaced = scheduler.generatePlan(
         tasks=pending,
         availability=owner.availability,
@@ -93,6 +102,15 @@ def main() -> None:
         print("\nUnscheduled (no available slot):")
         for task in unplaced:
             print(f"  - {task.pet.petName}: {task.taskType}")
+
+    # --- Recurrence: completing a daily task queues tomorrow's occurrence. ---
+    # Done after the schedule prints so it doesn't disturb today's plan.
+    print(f"\nRecurrence ({rex.petName}'s {rex_breakfast.taskType}):")
+    print(f"  today's occurrence due {rex_breakfast.dueDate}; marking done...")
+    next_breakfast = rex_breakfast.markComplete()
+    if next_breakfast is not None:
+        print(f"  -> queued next occurrence due {next_breakfast.dueDate} "
+              f"(pending, still recurs {next_breakfast.recurrence}).")
 
 
 if __name__ == "__main__":

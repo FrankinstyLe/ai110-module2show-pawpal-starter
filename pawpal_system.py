@@ -16,7 +16,7 @@ Object model
 
 import itertools
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 # Process-unique id sources for Task and Pet, so a UI (e.g. Streamlit) can key
 # widgets on a stable identifier rather than id(), which Python recycles for
@@ -27,6 +27,10 @@ _pet_ids = itertools.count(1)
 # Recurrence values a Task understands. A recurring task spawns its next
 # pending occurrence when it is completed (see Task.markComplete).
 RECURRENCES = ("daily", "weekly")
+
+# How many days forward each recurrence advances a dated task's dueDate when it
+# spawns its next occurrence (see Task._spawnNextOccurrence).
+RECURRENCE_DAYS = {"daily": 1, "weekly": 7}
 
 # Sensible defaults for when each task type is typically best scheduled. Used
 # by the Scheduler to bias a task toward a matching time-of-day window (see
@@ -80,6 +84,11 @@ class Task:
     # "" / None means one-off; "daily" or "weekly" makes the task recurring, so
     # completing it queues up the next occurrence (see markComplete).
     recurrence: str | None = None
+    # Optional calendar date this occurrence is due. When set on a recurring
+    # task, completing it advances the spawned copy to the next cycle's date
+    # (daily -> +1 day, weekly -> +7). None means the task carries no date, in
+    # which case the next occurrence is simply an undated pending copy.
+    dueDate: date | None = None
     # Process-unique identity for stable UI keys. compare/repr excluded so it
     # never affects Task equality or the de-dup logic in Owner/Pet.
     uid: int = field(
@@ -113,11 +122,19 @@ class Task:
 
         The copy keeps every attribute (type, priority, duration, note, pet,
         recurrence) but starts not-completed, and is attached to the pet so the
-        owner picks it up via getAllTasks()/pendingTasks().
+        owner picks it up via getAllTasks()/pendingTasks(). If this task has a
+        dueDate, the copy's dueDate is advanced to the next cycle (daily -> the
+        following day, weekly -> +7 days); an undated task stays undated.
         """
+        nextDue = self.dueDate
+        if nextDue is not None:
+            step = RECURRENCE_DAYS.get((self.recurrence or "").strip().lower(), 0)
+            nextDue = nextDue + timedelta(days=step)
         # Fresh uid so the new occurrence is a distinct identity from its
         # completed parent (otherwise UI widget keys would collide).
-        nextTask = replace(self, completed=False, uid=next(_task_ids))
+        nextTask = replace(
+            self, completed=False, dueDate=nextDue, uid=next(_task_ids)
+        )
         if self.pet is not None:
             self.pet.addTask(nextTask)
         return nextTask
